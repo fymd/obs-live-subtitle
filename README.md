@@ -78,6 +78,16 @@ python subtitle_ws.py
 | TEXT_SOURCE_NAME | OBS 中文文本源名称 |
 | TRANSLATION_SOURCE_NAME | OBS 译文文本源（空则合并到一行） |
 
+## 打包成 exe
+
+Windows 用户可直接运行仓库中的 `build_windows.bat`，或阅读 [build_exe.md](build_exe.md)。
+
+```bat
+build_windows.bat
+```
+
+产物在 `dist\\obs-live-subtitle\\` 与 `dist\\obs-live-subtitle-ws\\`，请分发**整个文件夹**。模型首次运行自动下载，不打进包。
+
 ## 项目结构
 
 ```
@@ -86,6 +96,8 @@ obs-live-subtitle/
 ├── subtitle_v2.py       # 浏览器源版 + 双语
 ├── subtitle_ws.py       # WebSocket 版 + 双语
 ├── translator.py        # 云端翻译模块
+├── build_windows.bat    # Windows 一键打包
+├── build_exe.md         # 打包说明
 ├── requirements.txt
 ├── README.md
 └── docs/
@@ -99,6 +111,7 @@ obs-live-subtitle/
 - [x] 网页样式设置
 - [x] obs-websocket 集成
 - [x] 云端翻译双语字幕
+- [x] 打包说明与脚本
 - [ ] 原生 OBS 插件（长期）
 
 ## 注意事项
