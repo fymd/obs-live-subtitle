@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+*.log
+.DS_Store
+# 模型缓存（若本地下载）
+models/
+.cache/
+dist/
+build/
+*.spec
