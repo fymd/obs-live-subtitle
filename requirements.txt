@@ -4,3 +4,5 @@ flask>=3.0.0
 numpy>=1.24.0
 # 可选：繁体转简体
 opencc-python-reimplemented>=0.1.7
+# WebSocket 版（subtitle_ws.py）
+obsws-python>=1.3.0
