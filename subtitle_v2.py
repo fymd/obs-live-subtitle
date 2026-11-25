@@ -7,6 +7,7 @@ OBS 实时字幕工具 v2
 - 幻听词黑名单过滤
 - initial_prompt 提升专有名词识别
 - 网页设置面板（字号/颜色/位置），localStorage 持久化
+- 云端翻译双语字幕（DeepL / OpenAI 兼容）
 """
 
 import json
@@ -18,6 +19,8 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 from flask import Flask, Response
+
+from translator import Translator
 
 # ===== 可以改的设置 =====
 MODEL_SIZE = 'small'          # 有显卡后改 'large-v3-turbo'
@@ -43,6 +46,16 @@ BLOCK_WORDS = [               # 幻听词黑名单，命中则不显示
     '点赞',
     '打赏',
 ]
+
+# 云端翻译（双语字幕）
+ENABLE_TRANSLATE = True
+TRANSLATE_PROVIDER = 'deepl'          # 'deepl' | 'openai'
+TRANSLATE_API_KEY = ''                # 或环境变量 DEEPL_API_KEY / OPENAI_API_KEY
+TRANSLATE_TARGET = 'EN'               # DeepL: EN / JA / KO ...
+# OpenAI 兼容时可用：
+OPENAI_BASE_URL = 'https://api.openai.com/v1'
+OPENAI_MODEL = 'gpt-4o-mini'
+TRANSLATE_ON_PARTIAL = False          # True=临时字幕也翻译（费额度）；False=仅定稿翻译
 # ========================
 
 # 可选：繁转简
@@ -53,6 +66,14 @@ if ENABLE_T2S:
         _cc = OpenCC('t2s')
     except ImportError:
         print('[警告] 未安装 opencc-python-reimplemented，跳过繁转简。可执行: pip install opencc-python-reimplemented')
+
+translator = Translator(
+    provider=TRANSLATE_PROVIDER,
+    api_key=TRANSLATE_API_KEY,
+    target_lang=TRANSLATE_TARGET,
+    openai_base_url=OPENAI_BASE_URL,
+    openai_model=OPENAI_MODEL,
+) if ENABLE_TRANSLATE else None
 
 model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
 
@@ -76,7 +97,14 @@ def publish(kind, text):
     text = clean(text)
     if not text:
         return
-    msg = json.dumps({'type': kind, 'text': text}, ensure_ascii=False)
+    translation = ''
+    if translator and translator.enabled:
+        if kind == 'final' or TRANSLATE_ON_PARTIAL:
+            translation = translator.translate(text)
+    msg = json.dumps(
+        {'type': kind, 'text': text, 'translation': translation},
+        ensure_ascii=False,
+    )
     with sub_lock:
         for q in subscribers:
             q.put(msg)
@@ -114,7 +142,7 @@ def recognize_loop():
         buf = np.concatenate([buf, chunk])
 
         if not has_speech:
-            buf = buf[-SAMPLE_RATE:]   # 一直没人说话，只留 1 秒，防止堆积
+            buf = buf[-SAMPLE_RATE:]
             continue
 
         silent = len(buf) > sil_len and rms(buf[-sil_len:]) < SILENCE_RMS
@@ -149,13 +177,15 @@ PAGE = r'''
   }
   #sub {
     max-width: 1500px;
-    max-height: calc(var(--line-height, 1.3em) * var(--max-lines, 2));
     overflow: hidden;
-    display: flex; flex-direction: column; justify-content: flex-end;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 0.15em;
     text-align: center;
     line-height: var(--line-height, 1.3);
     word-break: break-all;
     font-weight: bold;
+    transition: opacity 0.6s;
+  }
+  #sub .orig {
     font-size: var(--font-size, 46px);
     color: var(--color, #ffffff);
     text-shadow:
@@ -163,12 +193,17 @@ PAGE = r'''
       calc(var(--stroke, 2px) * -1) calc(var(--stroke, 2px) * -1) calc(var(--stroke, 2px) * 2) var(--stroke-color, #000),
       var(--stroke, 2px) calc(var(--stroke, 2px) * -1) calc(var(--stroke, 2px) * 2) var(--stroke-color, #000),
       calc(var(--stroke, 2px) * -1) var(--stroke, 2px) calc(var(--stroke, 2px) * 2) var(--stroke-color, #000);
-    transition: opacity 0.6s;
+  }
+  #sub .trans {
+    font-size: calc(var(--font-size, 46px) * 0.72);
+    color: var(--trans-color, #ffe08a);
+    text-shadow:
+      1px 1px 3px #000, -1px -1px 3px #000, 1px -1px 3px #000, -1px 1px 3px #000;
+    opacity: 0.95;
   }
   #sub.partial { opacity: 0.85; }
   #sub.fade { opacity: 0; }
 
-  /* 设置面板：仅调试时可见，OBS 浏览器源默认不显示控制条时可忽略 */
   #panel {
     position: fixed; top: 12px; right: 12px; z-index: 9999;
     background: rgba(0,0,0,0.75); color: #eee; padding: 12px 14px;
@@ -199,9 +234,11 @@ PAGE = r'''
   <label>最大行数 <input type="range" id="maxLines" min="1" max="4" value="2"></label>
   <div style="margin-top:8px;opacity:0.7;font-size:11px;">设置保存在本机浏览器</div>
 </div>
-<div id="wrap"><div id="sub"></div></div>
+<div id="wrap"><div id="sub"><div class="orig"></div><div class="trans"></div></div></div>
 <script>
   const el = document.getElementById('sub');
+  const elOrig = el.querySelector('.orig');
+  const elTrans = el.querySelector('.trans');
   const root = document.documentElement;
   const panel = document.getElementById('panel');
   const toggle = document.getElementById('toggle');
@@ -274,7 +311,8 @@ PAGE = r'''
     es.onmessage = (e) => {
       const m = JSON.parse(e.data);
       clearTimeout(timer);
-      el.textContent = m.text;
+      elOrig.textContent = m.text || '';
+      elTrans.textContent = m.translation || '';
       el.className = m.type === 'partial' ? 'partial' : '';
       if (m.type === 'final') {
         timer = setTimeout(() => { el.className = 'fade'; }, 3000);
