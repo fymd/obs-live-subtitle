@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 venv/
 .env
-.env.*
+.env.local
 *.log
 .DS_Store
 # 模型缓存（若本地下载）
