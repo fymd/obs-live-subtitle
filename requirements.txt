@@ -2,5 +2,5 @@ faster-whisper>=1.0.0
 sounddevice>=0.4.6
 flask>=3.0.0
 numpy>=1.24.0
-# 可选
-# opencc-python-reimplemented>=0.1.7
+# 可选：繁体转简体
+opencc-python-reimplemented>=0.1.7
