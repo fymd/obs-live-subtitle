@@ -52,13 +52,25 @@ BLOCK_WORDS = [
     '打赏',
 ]
 
+# 云端翻译（双语）
+ENABLE_TRANSLATE = True
+TRANSLATE_PROVIDER = 'deepl'          # 'deepl' | 'openai'
+TRANSLATE_API_KEY = ''                # 或环境变量 DEEPL_API_KEY / OPENAI_API_KEY
+TRANSLATE_TARGET = 'EN'
+OPENAI_BASE_URL = 'https://api.openai.com/v1'
+OPENAI_MODEL = 'gpt-4o-mini'
+TRANSLATE_ON_PARTIAL = False
+
 # OBS WebSocket
 OBS_HOST = 'localhost'
 OBS_PORT = 4455
 OBS_PASSWORD = ''                 # 在 OBS「工具 → WebSocket 服务器设置」里设置的密码
-TEXT_SOURCE_NAME = '字幕'         # OBS 里文本源的名称，必须完全一致
+TEXT_SOURCE_NAME = '字幕'         # 中文文本源名称
+TRANSLATION_SOURCE_NAME = '字幕翻译'  # 译文文本源，留空则合并到中文源（原文\\n译文）
 CLEAR_AFTER_SEC = 3.0             # 定稿后多少秒清空文本（0 = 不自动清空）
 # ========================
+
+from translator import Translator
 
 _cc = None
 if ENABLE_T2S:
@@ -67,6 +79,14 @@ if ENABLE_T2S:
         _cc = OpenCC('t2s')
     except ImportError:
         print('[警告] 未安装 opencc-python-reimplemented，跳过繁转简')
+
+translator = Translator(
+    provider=TRANSLATE_PROVIDER,
+    api_key=TRANSLATE_API_KEY,
+    target_lang=TRANSLATE_TARGET,
+    openai_base_url=OPENAI_BASE_URL,
+    openai_model=OPENAI_MODEL,
+) if ENABLE_TRANSLATE else None
 
 model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
 audio_q = queue.Queue()
@@ -85,17 +105,32 @@ def clean(text: str) -> str:
     return text.strip()
 
 
-def set_obs_text(text: str):
+def set_obs_text(text: str, translation: str = ''):
     """更新 OBS 文本源内容。"""
     global ws_client
     if ws_client is None:
         return
     try:
-        ws_client.set_input_settings(
-            name=TEXT_SOURCE_NAME,
-            settings={'text': text},
-            overlay=True,
-        )
+        if TRANSLATION_SOURCE_NAME:
+            ws_client.set_input_settings(
+                name=TEXT_SOURCE_NAME,
+                settings={'text': text},
+                overlay=True,
+            )
+            ws_client.set_input_settings(
+                name=TRANSLATION_SOURCE_NAME,
+                settings={'text': translation},
+                overlay=True,
+            )
+        else:
+            combined = text
+            if translation:
+                combined = f'{text}\n{translation}'
+            ws_client.set_input_settings(
+                name=TEXT_SOURCE_NAME,
+                settings={'text': combined},
+                overlay=True,
+            )
     except Exception as e:
         print(f'[OBS] 更新文本失败: {e}')
 
@@ -106,11 +141,10 @@ def schedule_clear():
 
     def _clear():
         time.sleep(CLEAR_AFTER_SEC)
-        set_obs_text('')
+        set_obs_text('', '')
 
     with _timer_lock:
         if _clear_timer is not None and _clear_timer.is_alive():
-            # 简单做法：开新线程，旧的也会执行但最终仍是空
             pass
         if CLEAR_AFTER_SEC > 0:
             _clear_timer = threading.Thread(target=_clear, daemon=True)
@@ -168,12 +202,18 @@ def recognize_loop():
         text = clean(transcribe(buf))
         if silent or too_long:
             if text:
-                set_obs_text(text)
+                translation = ''
+                if translator and translator.enabled:
+                    translation = translator.translate(text)
+                set_obs_text(text, translation)
                 schedule_clear()
             buf = np.zeros(0, dtype=np.float32)
             has_speech = False
         elif text:
-            set_obs_text(text)
+            translation = ''
+            if translator and translator.enabled and TRANSLATE_ON_PARTIAL:
+                translation = translator.translate(text)
+            set_obs_text(text, translation)
 
 
 def connect_obs():
@@ -186,7 +226,6 @@ def connect_obs():
             password=OBS_PASSWORD or '',
             timeout=5,
         )
-        # 验证源是否存在
         try:
             resp = ws_client.get_input_settings(TEXT_SOURCE_NAME)
             print(f'已连接，文本源「{TEXT_SOURCE_NAME}」就绪')
@@ -194,7 +233,6 @@ def connect_obs():
         except Exception:
             print(f'[警告] 找不到名为「{TEXT_SOURCE_NAME}」的输入源。')
             print('请在 OBS 当前场景添加文本源，并把 TEXT_SOURCE_NAME 改成完全一致的名称。')
-            # 仍然继续，用户可能稍后添加
             return True
     except Exception as e:
         print(f'连接 OBS 失败: {e}')
@@ -227,6 +265,6 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print('\n已退出')
         try:
-            set_obs_text('')
+            set_obs_text('', '')
         except Exception:
             pass
